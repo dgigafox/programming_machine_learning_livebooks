@@ -1,0 +1,133 @@
+<!-- livebook:{"file_entries":[{"name":"pizza.txt","type":"attachment"}]} -->
+
+# Chapter 2: Your First Learning Program
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.5.3"},
+  {:kino_vega_lite, "~> 0.1.7"}
+])
+```
+
+## Import whitespace-separated data from text
+
+The file contains 30 lines of data. Each is an example, composed of an input variable (the reservations) and a numerical label (the pizzas).
+
+```elixir
+path = __DIR__ |> Path.join("files/pizza.txt") |> Path.expand()
+
+{x, y} =
+  path
+  |> File.stream!()
+  |> Stream.map(&String.split/1)
+  |> Stream.map(&List.to_tuple/1)
+  |> Enum.into([])
+  # Drop header
+  |> List.delete_at(0)
+  |> Enum.unzip()
+
+x = Enum.map(x, &String.to_integer/1)
+y = Enum.map(y, &String.to_integer/1)
+```
+
+## Plotting Reservations vs Pizzas
+
+```elixir
+reservations = %{reservations: x, pizzas: y}
+```
+
+<!-- livebook:{"attrs":{"chart_title":null,"height":400,"layers":[{"active":true,"chart_type":"point","color_field":null,"color_field_aggregate":null,"color_field_bin":null,"color_field_scale_scheme":null,"color_field_type":null,"data_variable":"reservations","geodata_color":"blue","latitude_field":null,"longitude_field":null,"x_field":"reservations","x_field_aggregate":null,"x_field_bin":null,"x_field_scale_type":null,"x_field_type":"quantitative","y_field":"pizzas","y_field_aggregate":null,"y_field_bin":null,"y_field_scale_type":null,"y_field_type":"quantitative"}],"vl_alias":"Elixir.VegaLite","width":400},"chunks":null,"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
+
+```elixir
+VegaLite.new(width: 400, height: 400)
+|> VegaLite.data_from_values(reservations, only: ["reservations", "pizzas"])
+|> VegaLite.mark(:point)
+|> VegaLite.encode_field(:x, "reservations", type: :quantitative)
+|> VegaLite.encode_field(:y, "pizzas", type: :quantitative)
+```
+
+## Defining the model
+
+Here is the mathematical equation of a line that passes by the origin of the axes:  
+`y_hat = x * w`
+
+where:
+
+* *y_hat* is the forecast
+* *x* is the  reservation
+* *w* is the slope or weight
+
+## Linear Regression
+
+```elixir
+defmodule C2.LinearRegression do
+  import Nx.Defn
+
+  defn(predict(x, w), do: x * w)
+
+  @doc """
+  Average the squared errors (losses) of all the examples
+  """
+  defn loss(x, y, w) do
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  @doc """
+  This function estimates the weight through a loop that adds/subtract lr (learning rate)
+  It iterates until it gets the smallest error possible.
+  """
+  def train(x, y, iterations, lr) do
+    w = 0
+
+    Enum.reduce_while(0..iterations, w, fn i, w ->
+      current_loss = loss(x, y, w) |> Nx.to_number()
+      IO.puts("Iteration #{i} => Loss: #{current_loss}")
+
+      cond do
+        loss(x, y, w + lr) |> Nx.to_number() < current_loss -> {:cont, w + lr}
+        loss(x, y, w - lr) |> Nx.to_number() < current_loss -> {:cont, w - lr}
+        true -> {:halt, w}
+      end
+    end)
+  end
+end
+```
+
+## Train the system
+
+```elixir
+x = Nx.tensor(x)
+y = Nx.tensor(y)
+w = C2.LinearRegression.train(x, y, 10_000, 0.01)
+```
+
+## Predict the number of pizzas
+
+```elixir
+x = 20
+y_hat = C2.LinearRegression.predict(20, w)
+predictions = %{reservations: [0, 20], pizzas: [0, Nx.to_number(y_hat)]}
+IO.puts("Prediction: x=#{x} => y=#{Nx.to_number(y_hat)}")
+```
+
+<!-- livebook:{"attrs":{"chart_title":null,"height":null,"layers":[{"active":true,"chart_type":"point","color_field":null,"color_field_aggregate":null,"color_field_bin":null,"color_field_scale_scheme":null,"color_field_type":null,"data_variable":"reservations","geodata_color":"blue","latitude_field":null,"longitude_field":null,"x_field":"reservations","x_field_aggregate":null,"x_field_bin":null,"x_field_scale_type":null,"x_field_type":"quantitative","y_field":"pizzas","y_field_aggregate":null,"y_field_bin":null,"y_field_scale_type":null,"y_field_type":"quantitative"},{"active":true,"chart_type":"line","color_field":null,"color_field_aggregate":null,"color_field_bin":null,"color_field_scale_scheme":null,"color_field_type":null,"data_variable":"predictions","geodata_color":"blue","latitude_field":null,"longitude_field":null,"x_field":"reservations","x_field_aggregate":null,"x_field_bin":null,"x_field_scale_type":null,"x_field_type":"quantitative","y_field":"pizzas","y_field_aggregate":null,"y_field_bin":null,"y_field_scale_type":null,"y_field_type":"quantitative"}],"vl_alias":"Elixir.VegaLite","width":null},"chunks":null,"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
+
+```elixir
+VegaLite.new()
+|> VegaLite.layers([
+  VegaLite.new()
+  |> VegaLite.data_from_values(reservations, only: ["reservations", "pizzas"])
+  |> VegaLite.mark(:point)
+  |> VegaLite.encode_field(:x, "reservations", type: :quantitative)
+  |> VegaLite.encode_field(:y, "pizzas", type: :quantitative),
+  VegaLite.new()
+  |> VegaLite.data_from_values(predictions, only: ["reservations", "pizzas"])
+  |> VegaLite.mark(:line)
+  |> VegaLite.encode_field(:x, "reservations", type: :quantitative)
+  |> VegaLite.encode_field(:y, "pizzas", type: :quantitative)
+])
+```
