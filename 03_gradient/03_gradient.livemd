@@ -1,0 +1,268 @@
+<!-- livebook:{"file_entries":[{"name":"pizza.txt","type":"attachment"}]} -->
+
+# Chapter 3: Walking the Gradient
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.5.3"},
+  {:kino_vega_lite, "~> 0.1.7"}
+])
+```
+
+## The Problem with Chapter 2 Algorithm
+
+The `train/4` function from Chapter 2 looks like this
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+def train(x, y, iterations, lr) do
+    w = b = 0
+
+    Enum.reduce_while(0..iterations, {w, b}, fn i, {w, b} ->
+      current_loss = loss(x, y, w, b) |> Nx.to_number()
+      IO.puts("Iteration #{i} => Loss: #{current_loss}")
+
+      cond do
+        loss(x, y, w + lr, b) |> Nx.to_number() < current_loss -> {:cont, {w + lr, b}}
+        loss(x, y, w - lr, b) |> Nx.to_number() < current_loss -> {:cont, {w - lr, b}}
+        loss(x, y, w, b + lr) |> Nx.to_number() < current_loss -> {:cont, {w, b + lr}}
+        loss(x, y, w, b - lr) |> Nx.to_number() < current_loss -> {:cont, {w, b - lr}}
+        true -> {:halt, {w, b}}
+      end
+    end)
+  end
+```
+
+The problem with this algorithm is that we are tweaking bias `b` and weight `w` separately i.e. we first rotate the line that estimates the model by adjusting `w`. If current loss cannot go down further, then we shift the line up and down by adjusting `b`. This approach could go wrong: as we tweak `b` we might be increasing the loss caused by `w` and vice versa. In conclusion, we need to simultaneously tweak both `w` and `b` and compute the losses.
+
+We could update the `train/4` to try all the possible combinations of tweaks but would be impractical because combinations will increase as we increase the number of parameters and in our case there will be three raise to two (3^2) or nine (9) combination of calls per iteration i.e. three (3) possibilities for two (2) parameters `w` and `b` values are to increase, decrease, or unchange
+
+## Importing dataset
+
+```elixir
+path = __DIR__ |> Path.join("files/pizza.txt") |> Path.expand()
+
+{x, y} =
+  path
+  |> File.stream!()
+  |> Stream.map(&String.split/1)
+  |> Stream.map(&List.to_tuple/1)
+  |> Enum.into([])
+  # Drop header
+  |> List.delete_at(0)
+  |> Enum.unzip()
+
+x = Enum.map(x, &String.to_integer/1) |> Nx.tensor()
+y = Enum.map(y, &String.to_integer/1) |> Nx.tensor()
+```
+
+## Loss Curve
+
+Here's a simple program that graphs the value of losses when we tweak the weight from -1 to 4. Our aim is to get the weight that results to the smallest possible loss in the graph by using gradient descent
+
+```elixir
+defmodule C2.LinearRegression do
+  import Nx.Defn
+
+  defn predict(x, w) do
+    x * w
+  end
+
+  defn loss(x, y, w) do
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+end
+
+range = -1..4
+
+weight_vs_loss = %{
+  weight: range,
+  loss: Enum.map(range, &(C2.LinearRegression.loss(x, y, &1) |> Nx.to_number()))
+}
+```
+
+<!-- livebook:{"attrs":{"chart_title":"Weight vs Loss","height":null,"layers":[{"active":true,"chart_type":"line","color_field":null,"color_field_aggregate":null,"color_field_bin":null,"color_field_scale_scheme":null,"color_field_type":null,"data_variable":"weight_vs_loss","geodata_color":"blue","latitude_field":null,"longitude_field":null,"x_field":"weight","x_field_aggregate":null,"x_field_bin":null,"x_field_scale_type":null,"x_field_type":"quantitative","y_field":"loss","y_field_aggregate":null,"y_field_bin":null,"y_field_scale_type":null,"y_field_type":"quantitative"}],"vl_alias":"Elixir.VegaLite","width":null},"chunks":null,"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
+
+```elixir
+VegaLite.new(title: "Weight vs Loss")
+|> VegaLite.data_from_values(weight_vs_loss, only: ["weight", "loss"])
+|> VegaLite.mark(:line)
+|> VegaLite.encode_field(:x, "weight", type: :quantitative)
+|> VegaLite.encode_field(:y, "loss", type: :quantitative)
+```
+
+## Gradient Descent
+
+**Gradient** is the slope of the loss curve. It is measured by getting the derivative of the loss with respect to the weight `dL/dW`
+
+```elixir
+defmodule C3.GradientDescentWithoutBias do
+  import Nx.Defn
+
+  defn predict(x, w, b) do
+    x * w + b
+  end
+
+  def loss(x, y, w, b) do
+    x
+    |> predict(w, b)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  defn gradient(x, y, w) do
+    x
+    |> predict(w, 0)
+    |> Nx.subtract(y)
+    |> Nx.multiply(x)
+    |> Nx.mean()
+    |> Nx.multiply(2)
+  end
+
+  def train(x, y, iterations, lr) do
+    w = 0
+
+    Enum.reduce(0..iterations, w, fn i, w ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w, 0) |> Nx.to_number()}")
+      w - Nx.to_number(gradient(x, y, w)) * lr
+    end)
+  end
+end
+```
+
+## Running the code
+
+```elixir
+w = C3.GradientDescentWithoutBias.train(x, y, 100, 0.001)
+IO.puts("w=#{Nx.to_number(w)}")
+```
+
+## Escape from flatland
+
+Changing `b` from a constant to a variable changes [loss vs bias graph](rel/overlays/bin/migrate) from 2D to 3D curve
+
+## Partial derivatives
+
+Since the gradient is now a function of `b` and `w` we will not be able to use `C3.GradientDescentWithoutBias.gradient/3` anymore since in that function b is a constant. The gradient should now be calculated by using **partial derivatives** where we calculate the derivative of the loss function while pretending `b` is a constant and another derivative while pretending `w` is a constant
+
+```elixir
+defmodule C3.GradientDescentFinal do
+  import Nx.Defn
+
+  defn predict(x, w, b) do
+    x * w + b
+  end
+
+  def loss(x, y, w, b) do
+    x
+    |> predict(w, b)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  def gradient(x, y, w, b) do
+    # Derivative of L with respect to w where b is constant
+    w_gradient =
+      x
+      |> predict(w, b)
+      |> Nx.subtract(y)
+      |> Nx.multiply(x)
+      |> Nx.mean()
+      |> Nx.multiply(2)
+
+    # Derivative of L with respect to b where w is constant
+    b_gradient =
+      x
+      |> predict(w, b)
+      |> Nx.subtract(y)
+      |> Nx.mean()
+      |> Nx.multiply(2)
+
+    {w_gradient, b_gradient}
+  end
+
+  def train(x, y, iterations, lr) do
+    w = b = 0
+
+    Enum.reduce(0..iterations, {w, b}, fn i, {w, b} ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w, b) |> Nx.to_number()}")
+      {w_gradient, b_gradient} = gradient(x, y, w, b)
+      w = w - Nx.to_number(w_gradient) * lr
+      b = b - Nx.to_number(b_gradient) * lr
+      {w, b}
+    end)
+  end
+end
+```
+
+Copying linear regression with bias from [Chapter 2](http://localhost:8080/sessions/luabmcoqwgoaxibzj7vffkzmrwv6k2xv7777u2hk2ham5bq7#cell-zuk5yhcwfkxsrrnhxdghmwachmv32mrl) so we can compare
+
+```elixir
+defmodule C2.LinearRegressionWithBias do
+  import Nx.Defn
+
+  defn predict(x, w, b) do
+    x * w + b
+  end
+
+  def loss(x, y, w, b) do
+    x
+    |> predict(w, b)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  def train(x, y, iterations, lr) do
+    w = b = 0
+
+    Enum.reduce_while(0..iterations, {w, b}, fn i, {w, b} ->
+      current_loss = loss(x, y, w, b) |> Nx.to_number()
+      IO.puts("Iteration #{i} => Loss: #{current_loss}")
+
+      cond do
+        loss(x, y, w + lr, b) |> Nx.to_number() < current_loss -> {:cont, {w + lr, b}}
+        loss(x, y, w - lr, b) |> Nx.to_number() < current_loss -> {:cont, {w - lr, b}}
+        loss(x, y, w, b + lr) |> Nx.to_number() < current_loss -> {:cont, {w, b + lr}}
+        loss(x, y, w, b - lr) |> Nx.to_number() < current_loss -> {:cont, {w, b - lr}}
+        true -> {:halt, {w, b}}
+      end
+    end)
+  end
+end
+```
+
+First, let's run the earlier version with plenty of iterations and low lr of 0.0001
+
+```elixir
+{w, b} = C2.LinearRegressionWithBias.train(x, y, 157_777, 0.0001)
+IO.puts("w=#{w}, b=#{b}")
+x_hat = 20
+y_hat = C3.GradientDescentFinal.predict(x_hat, w, b)
+IO.puts("Prediction x=#{x_hat} => y=#{Nx.to_number(y_hat)}")
+```
+
+With the new Gradient Descent implementation with just 20,000 iterations we get:
+
+```elixir
+{w, b} = C3.GradientDescentFinal.train(x, y, 20_000, 0.001)
+IO.puts("w=#{w}, b=#{b}")
+x_hat = 20
+y_hat = C3.GradientDescentFinal.predict(x_hat, w, b)
+IO.puts("Prediction x=#{x_hat} => y=#{Nx.to_number(y_hat)}")
+```
+
+## When Gradient Descent Fails
+
+GD works well as long as the loss surface has a few characteristics:
+
+1. Convex - doesn't have bumps
+2. Continuous - doesn't have vertical cliffs or gaps
+3. Differentiable - smooth without cusps and weird spots (also the reason why we use mean squared error to create a steep surface instead of absolute value)
