@@ -1,0 +1,107 @@
+# Hands on: Basecamp Overshooting
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.5.3"},
+  {:kino_vega_lite, "~> 0.1.10"},
+  {:kino_explorer, "~> 0.1.11"}
+])
+```
+
+## Importing the dataset
+
+```elixir
+path = __DIR__ |> Path.join("../files/pizza.txt") |> Path.expand()
+
+{x, y} =
+  path
+  |> File.stream!()
+  |> Stream.map(&String.split/1)
+  |> Stream.map(&List.to_tuple/1)
+  |> Enum.into([])
+  # Drop header
+  |> List.delete_at(0)
+  |> Enum.unzip()
+
+x = Enum.map(x, &String.to_integer/1) |> Nx.tensor()
+y = Enum.map(y, &String.to_integer/1) |> Nx.tensor()
+```
+
+## Gradient descent from Chapter 3
+
+```elixir
+defmodule C3.GradientDescentFinal do
+  import Nx.Defn
+
+  defn predict(x, w, b) do
+    x * w + b
+  end
+
+  def loss(x, y, w, b) do
+    x
+    |> predict(w, b)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  def gradient(x, y, w, b) do
+    # Derivative of L with respect to w where b is constant
+    w_gradient =
+      x
+      |> predict(w, b)
+      |> Nx.subtract(y)
+      |> Nx.multiply(x)
+      |> Nx.mean()
+      |> Nx.multiply(2)
+
+    # Derivative of L with respect to b where w is constant
+    b_gradient =
+      x
+      |> predict(w, b)
+      |> Nx.subtract(y)
+      |> Nx.mean()
+      |> Nx.multiply(2)
+
+    {w_gradient, b_gradient}
+  end
+
+  def train(x, y, iterations, lr) do
+    w = b = 0
+
+    Enum.reduce(0..iterations, {w, b}, fn i, {w, b} ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w, b) |> Nx.to_number()}")
+      {w_gradient, b_gradient} = gradient(x, y, w, b)
+      w = w - Nx.to_number(w_gradient) * lr
+      b = b - Nx.to_number(b_gradient) * lr
+      {w, b}
+    end)
+  end
+end
+```
+
+```elixir
+C3.GradientDescentFinal.train(x, y, 100, 0.001)
+```
+
+```elixir
+C3.GradientDescentFinal.train(x, y, 100, 0.005)
+```
+
+At 100 iterations and at 0.005 learning rate it is observed that the loss increases for each iteration. On the first ten (10) iterations, loss will be seen like this:
+
+```
+Iteration 0 => Loss 812.8666381835938
+Iteration 1 => Loss 1131.89404296875
+Iteration 2 => Loss 1587.8385009765625
+Iteration 3 => Loss 2239.416259765625
+Iteration 4 => Loss 3170.52099609375
+Iteration 5 => Loss 4501.0263671875
+Iteration 6 => Loss 6402.21044921875
+Iteration 7 => Loss 9118.8037109375
+Iteration 8 => Loss 13000.4853515625
+Iteration 9 => Loss 18546.900390625
+Iteration 10 => Loss 26471.951171875
+```
+
+Learning rate determines how large the steps in each iteration on the gradient descent and it would be possible that large steps will overshoot the minimum
