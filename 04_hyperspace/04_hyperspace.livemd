@@ -1,0 +1,199 @@
+<!-- livebook:{"file_entries":[{"name":"pizza_2_vars.txt","type":"attachment"},{"name":"pizza_3_vars.txt","type":"attachment"}]} -->
+
+# Chapter 4: Hyperspace!
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.5.3"},
+  {:kino_vega_lite, "~> 0.1.7"}
+])
+```
+
+## Adding more dimensions
+
+To approximate `n`-dimensional examples, we need an `(n-1)`-dimensional shape  
+`ŷ = x1*w1 + x2*w2 + x3*w3 +...+b` -> weighted sum of the inputs formula
+
+## Matrix Math
+
+*matrix* is a bi-dimensional array. `(4, 3)` matrix has 4 rows and 3 columns
+
+## Multiplying Matrices
+
+**Golden rule:** we can multiply two (2) matrices if (and only if) the 2nd matrix rows is as many as the 1st matrix columns
+Example: given that M1 is (r<sub>1</sub>, c<sub>1</sub>) and M2 is (r<sub>2</sub>, c<sub>2</sub>), multiplying them will result to M3 which is a (r<sub>1</sub>, c<sub>2</sub>) matrix
+
+Multiplication of matrices works by using this formula:
+`M3[i][j] = i-th_row_of_M1 ⋅ j-th_column_of_M2`  
+such as:  
+=> M3[0][0] = M1[0][0] * M2[0][0] + M1[0][1] * M2[1][0] + ... + M1[0][c<sub>1</sub>] * M2[r<sub>2</sub>][0]  
+=> M3[0][1] = M1[0][0] * M2[0][1] + M1[0][1] * M2[1][1] + ... + M1[0][c<sub>1</sub>] * M2[r<sub>2</sub>][1]  
+and so on...
+
+## Transposing Matrices
+
+Transposing matrices simply means swapping row data to become column data and vice versa such as:
+`(4, 3) matrix transposed will become a (3, 4) matrix`  
+Also the element at  
+=> M[0][0] will be at M<sub>T</sub>[0][0]  
+=> M[0][1] will be at M<sub>T</sub>[1][0]  
+=> M[0][2] will be at M<sub>T</sub>[2][0]  
+and so on...
+
+## Preparing data
+
+```elixir
+path = __DIR__ |> Path.join("files/pizza_3_vars.txt") |> Path.expand()
+
+dataset =
+  path
+  |> File.stream!()
+  |> Stream.map(&String.split/1)
+  # Drop header
+  |> Stream.drop(1)
+  |> Stream.map(fn row -> Enum.map(row, &String.to_integer/1) end)
+  |> Enum.into([])
+  |> Nx.tensor()
+
+# Drop last column
+x = dataset[[.., 0..-2//1]]
+# Drop first three columns
+y = dataset[[.., -1..-1//1]]
+
+IO.puts("x.shape => #{inspect(Nx.shape(x))}")
+IO.puts("y.shape => #{inspect(Nx.shape(y))}")
+```
+
+## Upgrading prediction
+
+The prediction formula will now be a weighted some from a simple line formula from the previous chapter:  
+`ŷ = x1*w1 + x2*w2 + x3*w3 +...`
+Removing bias for simplification
+
+Since `X` is a `(30, 3)` matrix corresponding to three (3) inputs for each thirty (30) examples, `w` or weight should be `(3, 1)` corresponding to 3 different weights for each input but will be the same for all examples. Multiplying `X` by `w` based on the "golden rule" will give us a `(30, 1)` matrix denoted as `ŷ`.
+
+To multiply `X` and `w`, we'll use [Nx.dot/2](https://hexdocs.pm/nx/Nx.html#dot/2)
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+def predict(x, w), do: Nx.dot(x, w)
+```
+
+## Upgrading loss
+
+There will be no changes with how we calculate loss since [Nx's *](https://hexdocs.pm/nx/Nx.Defn.Kernel.html#*/2) from the `predict/2` function supports broadcasting. Without the bias again for simplification, the function should still be:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+def loss(x, y, w) do
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+```
+
+## Upgrading gradient
+
+To upgrade the gradient formula we just need to transpose `X`.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+def gradient(x, y, w) do
+  x
+  |> predict(w)
+  |> Nx.subtract(y)
+  |> Nx.multiply(Nx.transpose(x))
+  |> Nx.mean()
+  |> Nx.multiply(2)
+end
+```
+
+The reason is that:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+x
+|> predict(w)
+|> Nx.subtract(y)
+|> Nx.shape()
+# => {30, 1}
+```
+
+will produce a `(30, 1)` matrix and we cannot multiply it to the current `X` which is a `(30, 3)` matrix. Based on the golden rule, the first multiplier column should be as many as the rows of the second multiplier, thus for us to be able to multiply `X` to the above `(30, 1)` matrix we need `X` to be a `(3, 30)` matrix.
+
+## Putting it all together
+
+```elixir
+defmodule C4.MultipleRegressionWithoutBias do
+  def predict(x, w) do
+    Nx.dot(x, w)
+  end
+
+  def loss(x, y, w) do
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  def gradient(x, y, w) do
+    {num_samples, _} = Nx.shape(x)
+
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> then(&Nx.dot(Nx.transpose(x), &1))
+    |> Nx.divide(num_samples)
+    |> Nx.multiply(2)
+  end
+
+  def train(x, y, iterations, lr) do
+    {_, x_cols} = Nx.shape(x)
+    w = Nx.broadcast(0, {x_cols, 1})
+
+    Enum.reduce(0..iterations, w, fn i, w ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w) |> Nx.to_number()}")
+      gradient = gradient(x, y, w)
+      Nx.subtract(w, Nx.multiply(gradient, lr))
+    end)
+  end
+end
+```
+
+```elixir
+# running the program
+C4.MultipleRegressionWithoutBias.train(x, y, 100_000, 0.001)
+```
+
+## Bye Bye, Bias
+
+Previously, we implemented this prediction formula: `ŷ =x1*w1 + x2*w2 +x3*w3`. Now we want to add bias to it and implement: `ŷ =x1*w1 + x2*w2 + x3*w3 + b`  
+The latter formula can also be written as `ŷ =x1*w1 + x2*w2 + x3*w3 + x0*b` where x<sub>0</sub>=1. Thus we can add the bias `b` to the formula without changing our functions by adding a column `1s` for each example.
+
+```elixir
+{num_samples, _} = Nx.shape(x)
+dummy_column = Nx.broadcast(1, {num_samples, 1})
+x = Nx.concatenate([dummy_column, x], axis: 1)
+```
+
+## A Final Test Drive
+
+```elixir
+w = C4.MultipleRegressionWithoutBias.train(x, y, 100_000, 0.001)
+```
+
+```elixir
+IO.puts("""
+A few predictions:
+#{for i <- 0..4 do
+  "X[#{i}] -> #{x[i..i] |> C4.MultipleRegressionWithoutBias.predict(w) |> Nx.sum() |> Nx.to_number()} (label: #{Nx.to_number(y[i][0])}) \n"
+end}
+""")
+```
