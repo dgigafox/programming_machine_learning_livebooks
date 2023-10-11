@@ -1,0 +1,116 @@
+<!-- livebook:{"file_entries":[{"name":"life-expectancy-without-country-names.txt","type":"attachment"},{"name":"life-expectancy.txt","type":"attachment"},{"name":"readme.txt","type":"attachment"}]} -->
+
+# Hands On: Field Statistician
+
+```elixir
+Mix.install(
+  [
+    {:exla, "~> 0.6.1"},
+    {:nx, "~> 0.6.2"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Preparing data
+
+```elixir
+path = __DIR__ |> Path.join("files/life-expectancy-without-country-names.txt") |> Path.expand()
+
+dataset =
+  path
+  |> File.stream!()
+  |> Stream.map(&String.split/1)
+  # Drop header
+  |> Stream.drop(1)
+  |> Stream.map(fn row -> Enum.map(row, &(&1 |> Float.parse() |> elem(0))) end)
+  |> Enum.into([])
+  |> Nx.tensor()
+
+# Drop last column
+x = dataset[[.., 0..-2//1]]
+# Drop first three columns
+y = dataset[[.., -1..-1//1]]
+
+IO.puts("x.shape => #{inspect(Nx.shape(x))}")
+IO.puts("y.shape => #{inspect(Nx.shape(y))}")
+```
+
+## Adding dummy column
+
+```elixir
+{num_samples, _} = Nx.shape(x)
+dummy_column = Nx.broadcast(1, {num_samples, 1})
+x = Nx.concatenate([dummy_column, x], axis: 1)
+```
+
+## Multiple Regression without Bias from Chapter 4
+
+```elixir
+defmodule C4.MultipleRegressionWithoutBias do
+  def predict(x, w) do
+    Nx.dot(x, w)
+  end
+
+  def loss(x, y, w) do
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> Nx.pow(2)
+    |> Nx.mean()
+  end
+
+  def gradient(x, y, w) do
+    {num_samples, _} = Nx.shape(x)
+
+    x
+    |> predict(w)
+    |> Nx.subtract(y)
+    |> then(&Nx.dot(Nx.transpose(x), &1))
+    |> Nx.divide(num_samples)
+    |> Nx.multiply(2)
+  end
+
+  def train(x, y, iterations, lr) do
+    {_, x_cols} = Nx.shape(x)
+    w = Nx.broadcast(0, {x_cols, 1})
+
+    Enum.reduce(0..iterations, w, fn i, w ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w) |> Nx.to_number()}")
+      gradient = gradient(x, y, w)
+      Nx.subtract(w, Nx.multiply(gradient, lr))
+    end)
+  end
+end
+```
+
+## Training data
+
+```elixir
+w = C4.MultipleRegressionWithoutBias.train(x, y, 1_000_000, 0.0001)
+```
+
+## Predictions
+
+```elixir
+IO.puts("""
+A few predictions:
+#{for i <- 0..4 do
+  "X[#{i}] -> #{x[i..i] |> C4.MultipleRegressionWithoutBias.predict(w) |> Nx.sum() |> Nx.to_number()} (label: #{Nx.to_number(y[i][0])}) \n"
+end}
+""")
+```
+
+## Conclusion
+
+At 1M iterations and 0.001 learning rate, the predictions for the first five (5) examples are the following:
+
+```
+X[0] -> 75.50090789794922 (label: 76.25199890136719)
+X[1] -> 75.27198791503906 (label: 74.25499725341797)
+X[2] -> 77.46125793457031 (label: 82.55899810791016)
+X[3] -> 77.356201171875 (label: 81.25)
+X[4] -> 70.09274291992188 (label: 71.80000305175781)
+```
+
+The prediction differs from the label for about 1-5 margin because at the given iteration and learning rate the loss is still at around `25.5`
