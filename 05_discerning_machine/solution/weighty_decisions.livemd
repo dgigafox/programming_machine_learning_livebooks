@@ -1,0 +1,103 @@
+# Hands On: Weighty Decisions
+
+```elixir
+Mix.install(
+  [
+    {:nx, "~> 0.6.4"},
+    {:exla, "~> 0.6.4"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Preparing the data
+
+```elixir
+path = __DIR__ |> Path.join("../files/police.txt") |> Path.expand()
+
+dataset =
+  path
+  |> File.stream!()
+  |> Stream.map(&String.split/1)
+  # Drop header
+  |> Stream.drop(1)
+  |> Stream.map(fn row -> Enum.map(row, &String.to_integer/1) end)
+  |> Enum.into([])
+  |> Nx.tensor()
+
+# Drop last column
+x = dataset[[.., 0..-2//1]]
+# Drop first three columns
+y = dataset[[.., -1..-1//1]]
+
+bias = Nx.broadcast(1, {elem(Nx.shape(x), 0), 1})
+x = Nx.concatenate([bias, x], axis: 1)
+```
+
+```elixir
+defmodule C5.LogisticRegression do
+  import Nx.Defn
+
+  defn sigmoid(z) do
+    1 / (1 + Nx.exp(-z))
+  end
+
+  # renaming predict function to forward
+  def forward(x, w) do
+    weighted_sum = Nx.dot(x, w)
+    sigmoid(weighted_sum)
+  end
+
+  def classify(x, w) do
+    x
+    |> forward(w)
+    |> Nx.round()
+  end
+
+  def loss(x, y, w) do
+    y_hat = forward(x, w)
+    first_term = Nx.multiply(y, Nx.log(y_hat))
+    second_term = Nx.multiply(Nx.subtract(1, y), Nx.log(Nx.subtract(1, y_hat)))
+
+    first_term
+    |> Nx.add(second_term)
+    |> Nx.mean()
+    |> Nx.multiply(-1)
+  end
+
+  def gradient(x, y, w) do
+    {num_samples, _} = Nx.shape(x)
+
+    x
+    |> forward(w)
+    |> Nx.subtract(y)
+    |> then(&Nx.dot(Nx.transpose(x), &1))
+    |> Nx.divide(num_samples)
+  end
+
+  def train(x, y, iterations, lr) do
+    {_, x_cols} = Nx.shape(x)
+    w = Nx.broadcast(0, {x_cols, 1})
+
+    Enum.reduce(0..iterations, w, fn i, w ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w) |> Nx.to_number()}")
+      gradient = gradient(x, y, w)
+      Nx.subtract(w, Nx.multiply(gradient, lr))
+    end)
+  end
+end
+```
+
+```elixir
+w = C5.LogisticRegression.train(x, y, 10_000, 0.001)
+```
+
+```elixir
+[bias, reservations_coeff, temperature_coeff, tourists_coeff] = Nx.reshape(w, {4}) |> Nx.to_list()
+
+IO.puts(
+  "Function: y^ = #{reservations_coeff}x0 + #{temperature_coeff}x1 + #{tourists_coeff}x3 + #{bias}"
+)
+```
+
+As seen on the weights, the `reservations` column has the biggest impact on the likelihood of a neighbor calling the police. The negative weights means that the column has inverse relationship with the probability of neighbor calling the police. This means that the greater the value of the column, the lesser the chance of a police call and vice versa
