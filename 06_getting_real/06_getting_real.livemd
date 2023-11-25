@@ -1,0 +1,165 @@
+# Chapter 6: Getting Real
+
+```elixir
+Mix.install(
+  [
+    {:nx, "~> 0.6.3"},
+    {:exla, "~> 0.6.4"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## MNIST
+
+MNIST is a collection of labeled images. Digits are made up of 28 x 28 pixels each represented by one byte. Each byte's value can represent a grayscale ranging from 0 (perfect background white) to 255 (perfect foreground black)
+
+## Training vs. Testing
+
+### What is overfitting?
+
+Overfitting is a phenomenon wherein:
+
+> ML systems have a built-in tendency to memorize training data (Perrota, 2020, p. 80)
+
+Overfitting systems performs better on datasets you trained it with than new datasets so never test with the same data you trained it with.
+
+## Cooking Data
+
+```elixir
+defmodule C6.MNIST do
+  def load_images(path) do
+    # Open and unzip the file of images then store header information into variables
+    <<_magic_number::32, n_images::32, n_rows::32, n_cols::32, images::binary>> =
+      path
+      |> File.read!()
+      |> :zlib.gunzip()
+
+    images
+    # Create 1D tensor of type unsigned 8-bit integer from binary
+    |> Nx.from_binary({:u, 8})
+    # Reshape the pixels into a matrix into a matrix where each row is an image
+    |> Nx.reshape({n_images, n_cols * n_rows})
+  end
+
+  @doc """
+  Inserts a column of 1's into position 0 of tensor X along the the x-axis
+  """
+  def prepend_bias(x) do
+    {row, _col} = Nx.shape(x)
+    bias = Nx.broadcast(Nx.tensor(1), {row, 1})
+    Nx.concatenate([bias, x], axis: 1)
+  end
+
+  def load_labels(filename) do
+    # Open and unzip the file of images then read all the labels into a list
+    <<_magic_number::32, n_items::32, labels::binary>> =
+      filename
+      |> File.read!()
+      |> :zlib.gunzip()
+
+    labels
+    # Create 1D tensor of type unsigned 8-bit integer from binary
+    |> Nx.from_binary({:u, 8})
+    # Reshape the labels into a 1-column matrix
+    |> Nx.reshape({n_items, 1})
+  end
+
+  @doc "Converts all 5s to 1s, and everything else to 0"
+  def encode_fives(y), do: Nx.equal(y, 5)
+end
+```
+
+```elixir
+files_path = __DIR__ |> Path.join("/files")
+
+training_images_path = Path.join(files_path, "train-images-idx3-ubyte.gz")
+training_labels_path = Path.join(files_path, "train-labels-idx1-ubyte.gz")
+
+test_images_path = Path.join(files_path, "t10k-images-idx3-ubyte.gz")
+test_labels_path = Path.join(files_path, "t10k-labels-idx1-ubyte.gz")
+
+import C6.MNIST
+# 60K images, each 785 elements (1 bias + 28 * 28 pixels)
+x_train = training_images_path |> load_images() |> prepend_bias()
+# 10K images, each 785 elements, with the same structure as x_train
+x_test = test_images_path |> load_images() |> prepend_bias()
+
+# 60K labels, each with 1 if value is 5, otherwise 0
+y_train = training_labels_path |> load_labels() |> encode_fives()
+# 10K labels, with same encoding as y_train
+y_test = test_labels_path |> load_labels() |> encode_fives()
+```
+
+## Logistic Regression from Chapter 5
+
+```elixir
+defmodule C5.LogisticRegression do
+  import Nx.Defn
+
+  defn sigmoid(z) do
+    1 / (1 + Nx.exp(-z))
+  end
+
+  # renaming predict function to forward
+  def forward(x, w) do
+    weighted_sum = Nx.dot(x, w)
+    sigmoid(weighted_sum)
+  end
+
+  def classify(x, w) do
+    x
+    |> forward(w)
+    |> Nx.round()
+  end
+
+  def loss(x, y, w) do
+    y_hat = forward(x, w)
+    first_term = Nx.multiply(y, Nx.log(y_hat))
+    second_term = Nx.multiply(Nx.subtract(1, y), Nx.log(Nx.subtract(1, y_hat)))
+
+    first_term
+    |> Nx.add(second_term)
+    |> Nx.mean()
+    |> Nx.multiply(-1)
+  end
+
+  def gradient(x, y, w) do
+    {num_samples, _} = Nx.shape(x)
+
+    x
+    |> forward(w)
+    |> Nx.subtract(y)
+    |> then(&Nx.dot(Nx.transpose(x), &1))
+    |> Nx.divide(num_samples)
+  end
+
+  def train(x, y, iterations, lr) do
+    {_, x_cols} = Nx.shape(x)
+    w = Nx.broadcast(0, {x_cols, 1})
+
+    Enum.reduce(0..iterations, w, fn i, w ->
+      IO.puts("Iteration #{i} => Loss #{loss(x, y, w) |> Nx.to_number()}")
+      gradient = gradient(x, y, w)
+      Nx.subtract(w, Nx.multiply(gradient, lr))
+    end)
+  end
+
+  def test(x, y, w) do
+    {total_examples, _} = Nx.shape(x)
+    correct_results = Nx.sum(classify(x, w) |> Nx.equal(y)) |> Nx.to_number()
+
+    success_percent =
+      Nx.multiply(correct_results, 100) |> Nx.divide(total_examples) |> Nx.to_number()
+
+    IO.puts("Success: #{correct_results}/#{total_examples} (#{success_percent}%)")
+  end
+end
+```
+
+## The Real Thing
+
+```elixir
+w = C5.LogisticRegression.train(x_train, y_train, 100, 1.0e-5)
+C5.LogisticRegression.test(x_test, y_test, w)
+```
