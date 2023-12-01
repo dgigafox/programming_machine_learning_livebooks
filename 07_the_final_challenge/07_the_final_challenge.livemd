@@ -1,0 +1,423 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# Chapter 7: The Final Challenge
+
+```elixir
+Mix.install(
+  [
+    {:nx, "~> 0.6.3"},
+    {:exla, "~> 0.6.4"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Going Multiclass
+
+In the previous binary classifier, it passes the images to a weighted sum, and then a sigmoid (let's call it WSS). This result to a number ranging from 0 to 1. To build a multiclass classifier for MNIST, we will build an array of WSS for each digit.
+
+## One-hot encoding
+
+Encoding labels where one value per row is a hot 1, the rest are cold zeroes.
+
+```elixir
+defmodule C7.MNIST do
+  def load_images(path) do
+    # Open and unzip the file of images then store header information into variables
+    <<_magic_number::32, n_images::32, n_rows::32, n_cols::32, images::binary>> =
+      path
+      |> File.read!()
+      |> :zlib.gunzip()
+
+    images
+    # Create 1D tensor of type unsigned 8-bit integer from binary
+    |> Nx.from_binary({:u, 8})
+    # Reshape the pixels into a matrix into a matrix where each row is an image
+    |> Nx.reshape({n_images, n_cols * n_rows})
+  end
+
+  @doc """
+  Inserts a column of 1's into position 0 of tensor X along the the x-axis
+  """
+  def prepend_bias(x) do
+    {row, _col} = Nx.shape(x)
+    bias = Nx.broadcast(Nx.tensor(1), {row, 1})
+    Nx.concatenate([bias, x], axis: 1)
+  end
+
+  def load_labels(filename) do
+    # Open and unzip the file of images then read all the labels into a list
+    <<_magic_number::32, n_items::32, labels::binary>> =
+      filename
+      |> File.read!()
+      |> :zlib.gunzip()
+
+    labels
+    # Create 1D tensor of type unsigned 8-bit integer from binary
+    |> Nx.from_binary({:u, 8})
+    # Reshape the labels into a 1-column matrix
+    |> Nx.reshape({n_items, 1})
+  end
+
+  @doc "Flip hot values to 1"
+  def one_hot_encode(y) do
+    {rows, _} = Nx.shape(y)
+    # Create y_rows x 10 matrix where each row has elements 0..9
+    template = Nx.broadcast(0..9 |> Range.to_list() |> Nx.tensor(), {rows, 10})
+    # Run element-wise equal on template and y to flip `equal` value to 1's and the rest 0's
+    Nx.equal(template, y)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, C7.MNIST, <<70, 79, 82, 49, 0, 0, 14, ...>>, {:one_hot_encode, 1}}
+```
+
+```elixir
+files_path = __DIR__ |> Path.join("/files")
+
+training_images_path = Path.join(files_path, "train-images-idx3-ubyte.gz")
+training_labels_path = Path.join(files_path, "train-labels-idx1-ubyte.gz")
+
+test_images_path = Path.join(files_path, "t10k-images-idx3-ubyte.gz")
+test_labels_path = Path.join(files_path, "t10k-labels-idx1-ubyte.gz")
+
+import C7.MNIST
+y_train_unencoded = load_labels(training_labels_path)
+y_train = one_hot_encode(y_train_unencoded)
+y_test = load_labels(test_labels_path)
+
+x_train = load_images(training_images_path)
+x_test = load_images(test_images_path)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Nx.Tensor<
+  u8[10000][784]
+  EXLA.Backend<host:0, 0.3140815071.4057595920.104435>
+  [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...],
+    ...
+  ]
+>
+```
+
+```elixir
+defmodule C7.MNISTClassifier do
+  import Nx.Defn
+
+  defn sigmoid(z) do
+    1 / (1 + Nx.exp(-z))
+  end
+
+  # renaming predict function to forward
+  def forward(x, w) do
+    weighted_sum = Nx.dot(x, w)
+    sigmoid(weighted_sum)
+  end
+
+  def classify(x, w) do
+    x
+    |> forward(w)
+    |> Nx.argmax(axis: 1)
+    |> Nx.reshape({:auto, 1})
+  end
+
+  def loss(x, y, w) do
+    y_hat = forward(x, w)
+    first_term = Nx.multiply(y, Nx.log(y_hat))
+    second_term = Nx.multiply(Nx.subtract(1, y), Nx.log(Nx.subtract(1, y_hat)))
+
+    first_term
+    |> Nx.add(second_term)
+    |> Nx.mean()
+    |> Nx.multiply(-1)
+  end
+
+  def gradient(x, y, w) do
+    {num_samples, _} = Nx.shape(x)
+
+    x
+    |> forward(w)
+    |> Nx.subtract(y)
+    |> then(&Nx.dot(Nx.transpose(x), &1))
+    |> Nx.divide(num_samples)
+  end
+
+  @doc """
+  Previously `w` has one column and one row per input variable (785)
+  Now we need ten column of weights, one per class (10 classes for 0 to 9 labels)
+  and 785 rows, one per each input.
+
+  As per matrix rules `x.w = y`. `x` should have many columns as the rows of `w` then
+  `y` should have many columns as the columns of `w`.
+
+  So when `x` has (60000, 785) and `y` has (60000, 10) then `w` should have (785, 10)
+  """
+  def train(x_train, y_train, x_test, y_test, iterations, lr) do
+    {_, x_cols} = Nx.shape(x_train)
+    {_, y_cols} = Nx.shape(y_train)
+
+    w = Nx.broadcast(0, {x_cols, y_cols})
+
+    Enum.reduce(0..iterations, w, fn i, w ->
+      gradient = gradient(x_train, y_train, w)
+      report(i, x_train, y_train, x_test, y_test, w)
+      Nx.subtract(w, Nx.multiply(gradient, lr))
+    end)
+  end
+
+  def report(iteration, x_train, y_train, x_test, y_test, w) do
+    matches =
+      x_test
+      |> classify(w)
+      |> Nx.equal(y_test)
+      |> Nx.sum()
+
+    {n_test_examples, _} = Nx.shape(x_test)
+    match_percentage = Nx.to_number(matches) * 100 / n_test_examples
+    training_loss = loss(x_train, y_train, w)
+    IO.puts("#{iteration} - Loss: #{Nx.to_number(training_loss)}, #{match_percentage}")
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, C7.MNISTClassifier, <<70, 79, 82, 49, 0, 0, 25, ...>>, {:report, 6}}
+```
+
+## Moment of Truth
+
+```elixir
+C7.MNISTClassifier.train(x_train, y_train, x_test, y_test, 200, 1.0e-5)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+0 - Loss: 0.6931458115577698, 9.8
+1 - Loss: 0.8434450626373291, 68.04
+2 - Loss: 0.55120450258255, 68.1
+3 - Loss: 0.29568687081336975, 68.62
+4 - Loss: 0.18985387682914734, 73.75
+5 - Loss: 0.1755828857421875, 81.99
+6 - Loss: 0.16748814284801483, 81.25
+7 - Loss: 0.16238752007484436, 82.89
+8 - Loss: 0.15652808547019958, 82.69
+9 - Loss: 0.15292693674564362, 83.61
+10 - Loss: 0.14834971725940704, 83.55
+11 - Loss: 0.1454739272594452, 84.3
+12 - Loss: 0.14187847077846527, 84.27
+13 - Loss: 0.13942568004131317, 84.84
+14 - Loss: 0.1365935355424881, 84.96
+15 - Loss: 0.1344587802886963, 85.34
+16 - Loss: 0.13220199942588806, 85.4
+17 - Loss: 0.1303463578224182, 85.81
+18 - Loss: 0.12851174175739288, 85.86
+19 - Loss: 0.1269068568944931, 86.18
+20 - Loss: 0.1253783106803894, 86.22
+21 - Loss: 0.12398968636989594, 86.55
+22 - Loss: 0.12268473953008652, 86.51
+23 - Loss: 0.12147408723831177, 86.74
+24 - Loss: 0.12033682316541672, 86.75
+25 - Loss: 0.1192694902420044, 86.87
+26 - Loss: 0.11826270818710327, 86.93
+27 - Loss: 0.11731138080358505, 87.06
+28 - Loss: 0.11641000211238861, 87.1
+29 - Loss: 0.11555437743663788, 87.21
+30 - Loss: 0.11474067717790604, 87.29
+31 - Loss: 0.11396560072898865, 87.37
+32 - Loss: 0.1132262796163559, 87.37
+33 - Loss: 0.11252005398273468, 87.42
+34 - Loss: 0.11184463649988174, 87.45
+35 - Loss: 0.11119791865348816, 87.56
+36 - Loss: 0.11057794094085693, 87.65
+37 - Loss: 0.10998301953077316, 87.68
+38 - Loss: 0.10941153764724731, 87.73
+39 - Loss: 0.10886205732822418, 87.77
+40 - Loss: 0.10833322256803513, 87.81
+41 - Loss: 0.10782386362552643, 87.87
+42 - Loss: 0.10733279585838318, 87.94
+43 - Loss: 0.10685901343822479, 87.99
+44 - Loss: 0.10640154033899307, 88.06
+45 - Loss: 0.10595951229333878, 88.09
+46 - Loss: 0.10553207993507385, 88.14
+47 - Loss: 0.10511849075555801, 88.21
+48 - Loss: 0.10471803694963455, 88.25
+49 - Loss: 0.10433006286621094, 88.28
+50 - Loss: 0.10395394265651703, 88.3
+51 - Loss: 0.10358910262584686, 88.33
+52 - Loss: 0.10323500633239746, 88.35
+53 - Loss: 0.10289115458726883, 88.39
+54 - Loss: 0.10255707055330276, 88.4
+55 - Loss: 0.10223230719566345, 88.43
+56 - Loss: 0.10191645473241806, 88.47
+57 - Loss: 0.10160912573337555, 88.5
+58 - Loss: 0.10130996257066727, 88.57
+59 - Loss: 0.10101859271526337, 88.66
+60 - Loss: 0.10073472559452057, 88.66
+61 - Loss: 0.10045801848173141, 88.68
+62 - Loss: 0.10018820315599442, 88.71
+63 - Loss: 0.0999249741435051, 88.76
+64 - Loss: 0.09966812282800674, 88.8
+65 - Loss: 0.09941736608743668, 88.86
+66 - Loss: 0.09917248785495758, 88.89
+67 - Loss: 0.09893324226140976, 88.94
+68 - Loss: 0.09869945794343948, 88.97
+69 - Loss: 0.09847089648246765, 88.99
+70 - Loss: 0.09824739396572113, 89.03
+71 - Loss: 0.098028764128685, 89.04
+72 - Loss: 0.09781482070684433, 89.08
+73 - Loss: 0.09760544449090958, 89.12
+74 - Loss: 0.09740043431520462, 89.12
+75 - Loss: 0.09719966351985931, 89.14
+76 - Loss: 0.09700296819210052, 89.14
+77 - Loss: 0.0968102440237999, 89.17
+78 - Loss: 0.09662135690450668, 89.19
+79 - Loss: 0.09643615037202835, 89.22
+80 - Loss: 0.09625454246997833, 89.22
+81 - Loss: 0.09607642889022827, 89.22
+82 - Loss: 0.09590165317058563, 89.24
+83 - Loss: 0.09573015570640564, 89.24
+84 - Loss: 0.09556182473897934, 89.27
+85 - Loss: 0.09539654850959778, 89.27
+86 - Loss: 0.09523425996303558, 89.29
+87 - Loss: 0.09507486969232559, 89.29
+88 - Loss: 0.09491827338933945, 89.32
+89 - Loss: 0.09476441144943237, 89.32
+90 - Loss: 0.0946132019162178, 89.31
+91 - Loss: 0.09446457028388977, 89.33
+92 - Loss: 0.09431842714548111, 89.33
+93 - Loss: 0.09417474269866943, 89.33
+94 - Loss: 0.09403340518474579, 89.33
+95 - Loss: 0.09389438480138779, 89.34
+96 - Loss: 0.09375759959220886, 89.35
+97 - Loss: 0.09362299740314484, 89.36
+98 - Loss: 0.09349053353071213, 89.37
+99 - Loss: 0.09336012601852417, 89.39
+100 - Loss: 0.09323175251483917, 89.39
+101 - Loss: 0.09310533851385117, 89.39
+102 - Loss: 0.09298084676265717, 89.41
+103 - Loss: 0.09285824000835419, 89.41
+104 - Loss: 0.09273742139339447, 89.4
+105 - Loss: 0.0926184132695198, 89.42
+106 - Loss: 0.09250114858150482, 89.42
+107 - Loss: 0.09238555282354355, 89.44
+108 - Loss: 0.09227163344621658, 89.48
+109 - Loss: 0.09215932339429855, 89.5
+110 - Loss: 0.09204859286546707, 89.55
+111 - Loss: 0.09193940460681915, 89.56
+112 - Loss: 0.09183172136545181, 89.58
+113 - Loss: 0.09172551333904266, 89.6
+114 - Loss: 0.09162074327468872, 89.58
+115 - Loss: 0.0915173813700676, 89.6
+116 - Loss: 0.0914153978228569, 89.63
+117 - Loss: 0.09131476283073425, 89.61
+118 - Loss: 0.09121543914079666, 89.64
+119 - Loss: 0.09111741185188293, 89.64
+120 - Loss: 0.0910206288099289, 89.65
+121 - Loss: 0.09092510491609573, 89.66
+122 - Loss: 0.09083076566457748, 89.67
+123 - Loss: 0.09073763340711594, 89.67
+124 - Loss: 0.09064564108848572, 89.68
+125 - Loss: 0.09055480360984802, 89.68
+126 - Loss: 0.09046506136655807, 89.7
+127 - Loss: 0.09037640690803528, 89.72
+128 - Loss: 0.09028882533311844, 89.72
+129 - Loss: 0.09020229429006577, 89.73
+130 - Loss: 0.09011679887771606, 89.75
+131 - Loss: 0.09003229439258575, 89.75
+132 - Loss: 0.08994877338409424, 89.75
+133 - Loss: 0.08986622095108032, 89.76
+134 - Loss: 0.08978461474180222, 89.75
+135 - Loss: 0.08970394730567932, 89.76
+136 - Loss: 0.08962418884038925, 89.76
+137 - Loss: 0.089545339345932, 89.77
+138 - Loss: 0.089467354118824, 89.78
+139 - Loss: 0.08939024060964584, 89.81
+140 - Loss: 0.08931396901607513, 89.8
+141 - Loss: 0.08923853933811188, 89.81
+142 - Loss: 0.08916390687227249, 89.84
+143 - Loss: 0.08909008651971817, 89.85
+144 - Loss: 0.08901707082986832, 89.89
+145 - Loss: 0.08894480764865875, 89.9
+146 - Loss: 0.08887331187725067, 89.91
+147 - Loss: 0.08880256861448288, 89.91
+148 - Loss: 0.08873254060745239, 89.93
+149 - Loss: 0.0886632576584816, 89.92
+150 - Loss: 0.08859466016292572, 89.91
+151 - Loss: 0.08852678537368774, 89.94
+152 - Loss: 0.08845958113670349, 89.96
+153 - Loss: 0.08839306235313416, 89.96
+154 - Loss: 0.08832719922065735, 89.99
+155 - Loss: 0.08826199173927307, 90.0
+156 - Loss: 0.08819741010665894, 90.02
+157 - Loss: 0.08813346922397614, 90.02
+158 - Loss: 0.08807014673948288, 90.01
+159 - Loss: 0.08800745755434036, 90.02
+160 - Loss: 0.08794534206390381, 90.02
+161 - Loss: 0.0878838300704956, 90.04
+162 - Loss: 0.08782288432121277, 90.05
+163 - Loss: 0.08776253461837769, 90.06
+164 - Loss: 0.08770272135734558, 90.08
+165 - Loss: 0.08764348924160004, 90.08
+166 - Loss: 0.08758479356765747, 90.08
+167 - Loss: 0.08752662688493729, 90.08
+168 - Loss: 0.08746899664402008, 90.08
+169 - Loss: 0.08741188794374466, 90.08
+170 - Loss: 0.08735530823469162, 90.08
+171 - Loss: 0.08729920536279678, 90.1
+172 - Loss: 0.08724361658096313, 90.12
+173 - Loss: 0.08718852698802948, 90.13
+174 - Loss: 0.08713392168283463, 90.13
+175 - Loss: 0.08707978576421738, 90.13
+176 - Loss: 0.08702611923217773, 90.15
+177 - Loss: 0.0869729146361351, 90.17
+178 - Loss: 0.08692015707492828, 90.17
+179 - Loss: 0.08686787635087967, 90.18
+180 - Loss: 0.08681602030992508, 90.18
+181 - Loss: 0.0867646113038063, 90.21
+182 - Loss: 0.08671362698078156, 90.22
+183 - Loss: 0.08666306734085083, 90.23
+184 - Loss: 0.08661291748285294, 90.24
+185 - Loss: 0.08656319975852966, 90.25
+186 - Loss: 0.08651388436555862, 90.25
+187 - Loss: 0.08646497130393982, 90.26
+188 - Loss: 0.08641646057367325, 90.27
+189 - Loss: 0.08636832237243652, 90.28
+190 - Loss: 0.08632058650255203, 90.29
+191 - Loss: 0.08627323061227798, 90.31
+192 - Loss: 0.08622623980045319, 90.3
+193 - Loss: 0.08617963641881943, 90.3
+194 - Loss: 0.08613338321447372, 90.31
+195 - Loss: 0.08608749508857727, 90.31
+196 - Loss: 0.08604196459054947, 90.33
+197 - Loss: 0.08599679917097092, 90.33
+198 - Loss: 0.08595196157693863, 90.33
+199 - Loss: 0.0859074741601944, 90.32
+200 - Loss: 0.08586333692073822, 90.32
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Nx.Tensor<
+  f32[784][10]
+  EXLA.Backend<host:0, 0.3140815071.4057595920.139675>
+  [
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ...
+  ]
+>
+```
