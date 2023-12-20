@@ -1,0 +1,52 @@
+# Chapter 9: Designing the Network
+
+## Chaining Perceptrons
+
+Neural network can be built by serializing two perceptrons (outputs of the first are also the input of the second) where each perceptron has its own weights and its own sigmoid operation.
+
+This structure is called multilayer perceptron or artificial neural network
+
+Some definitions:  
+**Nodes** - are inputs on each layer  
+**Layer** - arrangement of nodes. In 3 layer neural network, they are called input layer, hidden layer and output layer.
+**Activation functions** - functions between layers
+
+## How many nodes?
+
+Number of input nodes for classifying MNIST
+
+### Input layer
+
+784 pixels + 1 bias = 785 nodes
+
+### Hidden layer:
+
+Simple rule of thumb is that the number of hidden nodes is somewhere between the number of input and output nodes  
+200 nodes + 1 bias = 201 nodes
+
+### Output layer:
+
+10 classes (digits 0-9) = 10 nodes
+
+### Weights:
+
+The neural network has 2 matrices of weights, one between input & hidden layer and the other one between hidden & output layer.
+
+Simple general rule to get the weights dimension:
+
+```
+row of weight = number of input elements
+column of weight = number of output elements
+```
+
+Shape of weight between input layer (M, 785) and hidden layer (M, 201) => (785, 201)  
+Shape of weight between hidden layer (M, 201) and output layer (M, 10) => (201, 10)
+
+## Enter the Softmax
+
+Most neural network replace the last sigmoid function with a function called softmax.
+Takes an array of number called `logits` and returns the same size of array
+
+softmax(l<sub>i</sub>) = e<sup>li</sup> / ∑e<sup>l</sup>
+
+Can be read as: "The exponential of each logit divided by the sum of exponentials of all the logits". The sum of its outputs is always 1.
