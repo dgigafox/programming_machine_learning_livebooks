@@ -1,0 +1,31 @@
+# Chapter 8: The Perceptron
+
+## Enter the Perceptron
+
+Diagram that tracks an MNIST image through the system
+
+```
+<inputs> ---> <weighted sum> ---> <activation fn> ---> <predicted label>
+```
+
+where,  
+**inputs:** X<sub>0</sub> (bias), X<sub>1</sub>, ... X<sub>n</sub>  
+**weighted_sum:** multiplication of matrices  
+**activation fn:** sigmoid  
+**predicted label:** y_hat
+
+## Assembling perceptron
+
+We've been assembling perceptron in our MNIST classifiers. `Stacked perceptrons` are used for classifying all examples at once. While multiclass perceptron are `parallelized` to classify one class from 0 to 9 - this picks the output with most confident prediction.
+
+Another way to combine perceptrons is to `serialize` them which will result to a `multilayer perceptron`
+
+## Where perceptron fails
+
+### Good for linearly separable data
+
+Linearly separable data are datasets whose classes can be separated by a straight line (for 2D data) or higher-dimensional hyperplane (for 3 or more dimensions)
+
+### Bad for non-linearly separable data
+
+Dataset whose data points cannot be separated cleanly with a line or a hyperplane
