@@ -1,0 +1,473 @@
+# Chapter 11: Training the Network
+
+```elixir
+Mix.install(
+  [
+    {:nx, "~> 0.6.4"},
+    {:exla, "~> 0.6.4"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+## Backpropagation / "Backprop"
+
+* An algorithm to calculate the gradient of a neural network
+* Application of the chain rule, one of the fundamental rule of calculus
+* Calculate neural network's dLoss/dWeight using the chain rule
+
+## The Chain Rule on a Simple Network
+
+Below is a simple network-like structure or computational graph:
+
+```mermaid
+graph LR
+    a((a)) --> b[*2] -- b = 2a --> c[**2] -- c = b^2 = (2a)^2 --> END:::hidden
+```
+
+It has an input `a` followed by two operations: "multiply by 2" whose output is called `b` and "square" whose output is called `c`
+
+> To calculate using chain rule:
+> 
+> 1. Walk back graph back from c to a
+> 2. For each operation along the way, calculate its local gradient—the derivative of the 
+>    operation's output with respect to its input.
+> 3. Multiply all the local gradients together.
+> 
+> (Reference: Programming Machine Learning by Paolo Perrotta 2020, p. 131)
+
+Writing down the local derivatives below:
+
+```mermaid
+graph LR
+a((a)) --> b[*2] -- db/da = 2 --> c[**2] -- dc/db = 2b --> END:::hidden
+```
+
+Therefore:
+
+$
+\frac{\partial c}{\partial a} = \frac{\partial c}{\partial b} \cdot \frac{\partial b}{\partial a} = 4a \cdot 2 = 8a
+$
+
+when `a` changes, `c` changes by 8 times the current value of `a`
+
+## More complicated computational graph
+
+```mermaid
+graph LR
+    w1((w1)) --> Plus
+    Input((x)) --> Dot[.] -- a = x.w2 --> Plus[+] -- y_hat = a + w1 + w2 --> Loss[L] -- L=(y_hat - y)^2 --> END:::hidden
+    w2((w2)) --> Dot
+    w2((w2)) --> Plus
+```
+
+where:  
+$x$ = input  
+$w1$ and $w2$ = couple of weights  
+$L$ = loss calculated as the squared error of the difference between prediction $\hat{y}$ and ground truth $y$
+
+<!-- livebook:{"break_markdown":true} -->
+
+Then imagine freezing the network mid training with the following values:  
+$
+x = 3 \\
+y = 17 \\
+w_{1} = 6 \\
+w_{2} = 2
+$
+
+we can then calculate the values in the graph  
+$
+a = x . w_{2} = 3(2) = 6 \\
+\hat{y} = a + w_{1} + w_{2} = 6 + 6 + 2 = 14 \\
+L = (\hat{y} - y)^{2} = (14 - 17)^{2} = (-3)^{2} = 9
+$
+
+Getting the gradients of $L$ with respect to $w_{1}$
+
+$$
+\begin{equation*} \
+\begin{split}
+\frac{\partial L}{\partial \hat{y}} & = 2(\hat{y} - y) \\
+& = 2(14 - 17) \\
+& = 2(-3) \\
+& = -6
+\end{split}
+\end{equation*}
+$$
+
+$$
+\frac{\partial \hat{y}}{\partial w_{1}} = 1
+$$
+
+$$
+\begin{equation*} \
+\begin{split}
+\frac{\partial L}{\partial w_{1}} & = \frac{\partial L}{\partial \hat{y}} . \frac{\partial \hat{y}}{\partial w_{1}} \\
+& = (-6) (1) \\
+& = -6
+\end{split}
+\end{equation*}
+$$
+
+then $L$ with respect to $w_{2}$ (sum the gradients for multiple paths):  
+$$
+\begin{equation*} \
+\begin{split}
+\frac{\partial L}{\partial w_{2}} & = \frac{\partial L}{\partial \hat{y}} \cdot \frac{\partial \hat{y}}{\partial w_{2}} +  \frac{\partial L}{\partial \hat{y}} \cdot \frac{\partial \hat{y}}{\partial w_{2}} \cdot \frac{\partial a}{\partial w_{2}} \\
+& = -6(1) + -6(1)(x) \\
+& = -6 + -6(3) \\
+& = -24
+\end{split}
+\end{equation*}
+$$
+
+## Applying Backpropagation
+
+To apply the chain rule, we need the local gradients on the paths back from L to w1 and w2:
+
+```mermaid
+graph LR
+    w1((w1)) --> Dot1
+    w2((w2)) --> Dot2
+    Input((x)) --> Dot1[.] -- a = x.w1 --> Sigmoid[σ] -- h = σ(a) --> Dot2[.] -- b = h . w2 --> SML[SML] -- L = SML(b) --> END:::hidden
+
+    SML -. SML' .-> Dot2
+    Dot2 -. db/dh = w2 .-> Sigmoid
+    Sigmoid -. σ' .-> Dot1
+    Dot1 -. da/dw1 .-> w1
+    Dot2 -. db/dw2 .-> w2
+```
+
+Computing for the derivatives then:  
+$$
+SML^{\prime} = \hat{y} - y \\
+\sigma^{\prime} = \sigma(1-\sigma) \\
+$$
+
+Derivatives of the scalar multiplication below:
+$$
+\frac{\partial b}{\partial w_{2}} = h \\
+\frac{\partial b}{\partial h} = w_{2}  \\
+\frac{\partial a}{\partial w_{1}} = x \\
+$$
+
+Note: Follow this [link](https://levelup.gitconnected.com/killer-combo-softmax-and-cross-entropy-5907442f60ba) for $ SML^{\prime} $ derivative explanation
+
+## Importing MNIST Helpers for Running the Network Later On
+
+```elixir
+defmodule C7.MNIST do
+  @moduledoc "MNIST functions from Chapter 7"
+  def load_images(path) do
+    # Open and unzip the file of images then store header information into variables
+    <<_magic_number::32, n_images::32, n_rows::32, n_cols::32, images::binary>> =
+      path
+      |> File.read!()
+      |> :zlib.gunzip()
+
+    images
+    # Create 1D tensor of type unsigned 8-bit integer from binary
+    |> Nx.from_binary({:u, 8})
+    # Reshape the pixels into a matrix into a matrix where each row is an image
+    |> Nx.reshape({n_images, n_cols * n_rows})
+  end
+
+  @doc """
+  Inserts a column of 1's into position 0 of tensor X along the the x-axis
+  """
+  def prepend_bias(x) do
+    {row, _col} = Nx.shape(x)
+    bias = Nx.broadcast(Nx.tensor(1), {row, 1})
+    Nx.concatenate([bias, x], axis: 1)
+  end
+
+  def load_labels(filename) do
+    # Open and unzip the file of images then read all the labels into a list
+    <<_magic_number::32, n_items::32, labels::binary>> =
+      filename
+      |> File.read!()
+      |> :zlib.gunzip()
+
+    labels
+    # Create 1D tensor of type unsigned 8-bit integer from binary
+    |> Nx.from_binary({:u, 8})
+    # Reshape the labels into a 1-column matrix
+    |> Nx.reshape({n_items, 1})
+  end
+
+  @doc "Flip hot values to 1"
+  def one_hot_encode(y) do
+    {rows, _} = Nx.shape(y)
+    # Create y_rows x 10 matrix where each row has elements 0..9
+    template = Nx.broadcast(0..9 |> Range.to_list() |> Nx.tensor(), {rows, 10})
+    # Run element-wise equal on template and y to flip `equal` value to 1's and the rest 0's
+    Nx.equal(template, y)
+  end
+end
+```
+
+```elixir
+files_path = __DIR__ |> Path.join("/files")
+
+training_images_path = Path.join(files_path, "train-images-idx3-ubyte.gz")
+training_labels_path = Path.join(files_path, "train-labels-idx1-ubyte.gz")
+
+test_images_path = Path.join(files_path, "t10k-images-idx3-ubyte.gz")
+test_labels_path = Path.join(files_path, "t10k-labels-idx1-ubyte.gz")
+
+import C7.MNIST
+y_train_unencoded = load_labels(training_labels_path)
+y_train = one_hot_encode(y_train_unencoded)
+y_test = load_labels(test_labels_path)
+
+x_train = load_images(training_images_path)
+x_test = load_images(test_images_path)
+```
+
+## Calculating the Gradient of the Weights
+
+Calculating the gradient of w<sub>2</sub>:
+$$
+\frac{\partial L}{\partial w_{2}} = SML^{\prime} \cdot \frac{\partial b}{\partial w_{2}} = (\hat{y} - y) \cdot h \\
+$$
+
+<!-- livebook:{"break_markdown":true} -->
+
+Calculating the gradient of w<sub>1</sub>:
+$$
+\frac{\partial L}{\partial w_{1}} = SML^{\prime} \cdot \frac{\partial b}{\partial h} \cdot \sigma^{\prime} \cdot \frac{\partial a}{\partial w_{1}} = (\hat{y} - y) \cdot w_{2} \cdot \sigma \cdot (1 - \sigma) \cdot x \\
+$$
+
+## Initializing the Weights
+
+Initialize weights with values that are:
+
+###### 1. Random (to break symmetry)
+
+$$
+\begin{bmatrix}
+1 & 2 & 3 \\
+4 & 5 & 6 \\
+\end{bmatrix}
+\bullet
+\begin{bmatrix}
+1 & 1 \\
+1 & 1 \\
+1 & 1 \\
+\end{bmatrix}
+
+\begin{bmatrix}
+6 & 6 \\
+15 & 15 \\
+\end{bmatrix}
+$$
+Imagine the first matrix is $ x $ and the second matrix is $ w_{1} $. Then $ x \cdot w_{1} $ result will always have the same values in every row because of the uniformity of the second matrix. This resulting matrix will be passed to the sigmoid function to produce hidden layer $ h $ with the same values in each row which means all hidden nodes in the network will have the same value. To avoid this, don't initialize weights to similar constant values.
+
+###### 2. Small (to speed up training and avoid dead neurons)
+
+With large weights the sigmoid becomes a very flat function, with gradient close to 0 (saturated). During backprop, the gradient 0 gets multiplied by other local gradients, causing the entire gradient to become 0, with gradient descent having nowhere to go. Resulting to the weight never changing again, no matter how long we train the network. The node associated with this "never changing" weight is called `dead neuron`. To avoid this, values of each weight shouldn't be much bigger than the square root of the inverse of rows:
+
+$$
+w \approx \pm \sqrt{\frac{1}{r}}
+$$
+
+## The Finished Network
+
+```elixir
+defmodule C11.NeuralNetwork do
+  import C7.MNIST, only: [prepend_bias: 1]
+  import Nx.Defn
+
+  @doc """
+  For w2_gradient:
+  - Swap the operands of the multiplication then transpose one of them to get a result with the
+  same dimension as w2.
+  - We also need to do a prepend_bias/1 since we did it with forward/3, we need to do the same
+  during backprop.
+  - The matrix multiplication needs to be divide by the rows of x (number of examples) to get
+  the average gradient
+
+  For w1_gradient:
+  - Use h as is, without a bias column since it has no effect on dL/dw1
+  - Since we ignored the first column of h, we also have to ignore the first row of w1 to match
+  columns by rows in matrix multiplication
+  - `sigmoid_gradient/1` calculates sigmoid's gradient from sigmoid's output `h`
+  - Lastly multiply x to the previous intermediate result with same rules when we calculate
+  w2_gradient
+  """
+  def back(x, y, y_hat, w2, h) do
+    {num_samples, _} = Nx.shape(x)
+
+    w2_gradient =
+      h
+      |> prepend_bias()
+      |> Nx.transpose()
+      |> Nx.dot(Nx.subtract(y_hat, y))
+      |> Nx.divide(num_samples)
+
+    w1_gradient =
+      x
+      |> prepend_bias()
+      |> Nx.transpose()
+      |> Nx.dot(
+        y_hat
+        |> Nx.subtract(y)
+        |> Nx.dot(Nx.transpose(w2[1..-1//1]))
+        |> Nx.multiply(sigmoid_gradient(h))
+      )
+      |> Nx.divide(num_samples)
+
+    {w1_gradient, w2_gradient}
+  end
+
+  def initialize_weights(n_input_vars, n_hidden_nodes, n_classes) do
+    key = Nx.Random.key(1234)
+    mean = 0.0
+    standard_deviation = 0.01
+
+    w1_rows = n_input_vars + 1
+
+    {normal, new_key} =
+      Nx.Random.normal(key, mean, standard_deviation, shape: {w1_rows, n_hidden_nodes})
+
+    w1 = Nx.multiply(normal, Nx.sqrt(1 / w1_rows))
+
+    w2_rows = n_hidden_nodes + 1
+
+    {normal, _new_key} =
+      Nx.Random.normal(new_key, mean, standard_deviation, shape: {w2_rows, n_classes})
+
+    w2 = Nx.multiply(normal, Nx.sqrt(1 / w2_rows))
+
+    {w1, w2}
+  end
+
+  def train(x_train, y_train, x_test, y_test, n_hidden_nodes, iterations, lr) do
+    {_, n_input_variables} = Nx.shape(x_train)
+    {_, n_classes} = Nx.shape(y_train)
+    {w1, w2} = initialize_weights(n_input_variables, n_hidden_nodes, n_classes)
+
+    Enum.reduce(1..iterations, {w1, w2}, fn iteration, {w1, w2} ->
+      {y_hat, h} = forward(x_train, w1, w2)
+      {w1_gradient, w2_gradient} = back(x_train, y_train, y_hat, w2, h)
+      w1 = Nx.subtract(w1, Nx.multiply(w1_gradient, lr))
+      w2 = Nx.subtract(w2, Nx.multiply(w2_gradient, lr))
+      report(iteration, x_train, y_train, x_test, y_test, w1, w2)
+      {w1, w2}
+    end)
+  end
+
+  # Functions from `Ch 10: Building the Network` below
+
+  defn sigmoid(z) do
+    1 / (1 + Nx.exp(-z))
+  end
+
+  def softmax(logits) do
+    exponentials = Nx.exp(logits)
+
+    sum_of_exponentials_by_row =
+      exponentials
+      |> Nx.sum(axes: [1])
+      |> Nx.reshape({:auto, 1})
+
+    Nx.divide(exponentials, sum_of_exponentials_by_row)
+  end
+
+  def sigmoid_gradient(sigmoid) do
+    Nx.multiply(sigmoid, Nx.subtract(1, sigmoid))
+  end
+
+  @doc """
+  Cross-entropy loss
+  Loss formula specific for multiclass classifiers.
+  Measures the distance between the classifier's predictions and the labels.
+  Lower loss means better classifier
+  """
+  def loss(y_train, y_hat) do
+    {rows, _} = Nx.shape(y_train)
+
+    y_train
+    |> Nx.multiply(Nx.log(y_hat))
+    |> Nx.sum()
+    |> Nx.multiply(-1)
+    |> Nx.divide(rows)
+  end
+
+  @doc """
+  Implements the operation called "forward propagation"
+  Steps:
+  1. We add a bias to the inputs
+  2. Compute the weighted sum using the 1st matrix of weights, w1
+  3. Pass the result to the activation function (sigmoid or softmax)
+  4. Repeat for all layers
+  """
+  def forward(x, w1, w2) do
+    # Hidden layer
+    h =
+      x
+      |> prepend_bias()
+      |> then(&Nx.dot(&1, w1))
+      |> sigmoid()
+
+    # Output layer
+    y_hat =
+      h
+      |> prepend_bias()
+      |> then(&Nx.dot(&1, w2))
+      |> softmax()
+
+    {y_hat, h}
+  end
+
+  @doc """
+  Same classify/2 function from Ch 7 but modified for neutral network
+  """
+  def classify(x, w1, w2) do
+    x
+    |> forward(w1, w2)
+    |> elem(0)
+    |> Nx.argmax(axis: 1)
+    |> Nx.reshape({:auto, 1})
+  end
+
+  def report(iteration, x_train, y_train, x_test, y_test, w1, w2) do
+    {y_hat, _} = forward(x_train, w1, w2)
+    training_loss = loss(y_train, y_hat)
+    classifications = classify(x_test, w1, w2)
+    # y_test is not one-hot encoded
+
+    # Measure how many classifications were gotten correctly by comparing
+    # with y_test. The mean/1 function essentially will get the the sum of 1's (matches)
+    # divided by the total number of classifications
+    accuracy =
+      classifications
+      |> Nx.equal(y_test)
+      |> Nx.mean()
+      |> Nx.multiply(100.0)
+
+    IO.puts(
+      "Iteration: #{iteration}, Loss: #{Nx.to_number(training_loss)}, Accuracy: #{Nx.to_number(accuracy)}"
+    )
+  end
+end
+```
+
+```elixir
+n_hidden_nodes = 200
+iterations = 1_500
+lr = 0.01
+
+{w1, w2} =
+  C11.NeuralNetwork.train(x_train, y_train, x_test, y_test, n_hidden_nodes, iterations, lr)
+```
+
+Here are the results of running the network:
+
+```
+Iteration: 1, Loss: 2.298130750656128, Accuracy: 22.770000457763672  
+Iteration: 2, Loss: 2.2938597202301025, Accuracy: 46.900001525878906  
+...  
+Iteration: 1500, Loss: 0.17024727165699005, Accuracy: 94.58000183105469
+```
