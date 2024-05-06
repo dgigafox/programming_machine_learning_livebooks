@@ -1,4 +1,4 @@
-# Chapter 12: How Classifiers Work
+# Hands On: Data from Hell
 
 ```elixir
 Mix.install(
@@ -11,10 +11,10 @@ Mix.install(
 )
 ```
 
-## Perceptron on Linearly Separable Data
+## Plotting the Data
 
 ```elixir
-path = __DIR__ |> Path.join("files/linearly_separable.txt") |> Path.expand()
+path = __DIR__ |> Path.join("files/circles.txt") |> Path.expand()
 
 dataset =
   path
@@ -31,8 +31,6 @@ dataset =
   end)
   |> Enum.into([])
 ```
-
-<!-- livebook:{"attrs":"eyJjaGFydF90aXRsZSI6IkxpbmVhcmx5IFNlcGFyYWJsZSBEYXRhc2V0cyIsImhlaWdodCI6MzAwLCJsYXllcnMiOlt7ImFjdGl2ZSI6dHJ1ZSwiY2hhcnRfdHlwZSI6InBvaW50IiwiY29sb3JfZmllbGQiOiJsYWJlbCIsImNvbG9yX2ZpZWxkX2FnZ3JlZ2F0ZSI6bnVsbCwiY29sb3JfZmllbGRfYmluIjpudWxsLCJjb2xvcl9maWVsZF9zY2FsZV9zY2hlbWUiOm51bGwsImNvbG9yX2ZpZWxkX3R5cGUiOiJub21pbmFsIiwiZGF0YV92YXJpYWJsZSI6ImRhdGFzZXQiLCJnZW9kYXRhX2NvbG9yIjoiYmx1ZSIsImxhdGl0dWRlX2ZpZWxkIjpudWxsLCJsb25naXR1ZGVfZmllbGQiOm51bGwsInhfZmllbGQiOiJpbnB1dF9hIiwieF9maWVsZF9hZ2dyZWdhdGUiOm51bGwsInhfZmllbGRfYmluIjpudWxsLCJ4X2ZpZWxkX3NjYWxlX3R5cGUiOm51bGwsInhfZmllbGRfdHlwZSI6InF1YW50aXRhdGl2ZSIsInlfZmllbGQiOiJpbnB1dF9iIiwieV9maWVsZF9hZ2dyZWdhdGUiOm51bGwsInlfZmllbGRfYmluIjpudWxsLCJ5X2ZpZWxkX3NjYWxlX3R5cGUiOm51bGwsInlfZmllbGRfdHlwZSI6InF1YW50aXRhdGl2ZSJ9XSwidmxfYWxpYXMiOiJFbGl4aXIuVmVnYUxpdGUiLCJ3aWR0aCI6MzAwfQ","chunks":null,"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
 
 ```elixir
 VegaLite.new(width: 300, height: 300, title: "Linearly Separable Datasets")
@@ -151,30 +149,7 @@ end
 weight = C12.Perceptron.train(x_train, y_train, x_test, y_test, iterations = 10_000, lr = 0.1)
 ```
 
-Here's what we get:  
-0 - Loss: 1.3862943611198901, 50.0%  
-1 - Loss: 1.2927451108167307, 100.0%  
-...  
-10000 - Loss: 0.00702079210910519, 100.0%
-
-With just one iteration, we get a 100% accuracy
-
 ## Decision Boundary
-
-**Decision boundary** is the invisible line that separates two classes
-
-* During training the classifier finds the boundary
-* During classification it uses the boundary to classify whether data point is blue or orange (as per the graph)
-
-<!-- livebook:{"break_markdown":true} -->
-
-Credits to https://github.com/nickgnd/programming-machine-learning-livebooks for the idea on how to plot decision boundary. As mentioned:
-
-> The idea:
-> 
-> * Generate a grid of points and use the min/max values from the inital dataset to compute the boundaries.
-> * Classify each point using the weight computed before with the initial dataset
-> * Plot the result highlighting the "decision boundary"
 
 ```elixir
 defmodule C12.DecisionBoundary do
@@ -209,7 +184,7 @@ defmodule C12.DecisionBoundary do
 end
 ```
 
-## Plotting the Perceptron Decision Boundary
+## Plotting the Perceptron Boundary
 
 ```elixir
 # Get input A
@@ -256,70 +231,11 @@ Vl.new(width: 600, height: 400)
 |> Vl.resolve(:scale, x: :shared, y: :shared, color: :independent)
 ```
 
-As we can see in the diagram, the decision boundary perfectly separates green triangles and blue squares classes. Both classes are in their respective area thus the 100% accuracy.
+## What does the perceptron’s boundary look like?
 
-No matter how much you change the perceptron's weight, the decision boundary is always a straight line (for 2D or a higher dimensional equivalent of a line for higher dimensions). Perceptron don't do curves.
+The decision boundary of the perceptron cuts the circle formed by the data points into half. This perfectly describes the 49% accuracy produced by the model because half of the points are misclassified as half of the data points are seen on the area they don't belong.
 
-## Perceptron on Non Linearly Separable Data
-
-```elixir
-path = __DIR__ |> Path.join("files/non_linearly_separable.txt") |> Path.expand()
-
-dataset =
-  path
-  |> File.stream!()
-  |> Stream.map(&String.split/1)
-  # Drop header
-  |> Stream.drop(1)
-  |> Stream.map(fn [input_a, input_b, label] ->
-    %{
-      input_a: String.to_float(input_a),
-      input_b: String.to_float(input_b),
-      label: String.to_integer(label)
-    }
-  end)
-  |> Enum.into([])
-```
-
-<!-- livebook:{"attrs":"eyJjaGFydF90aXRsZSI6Ik5vbiBMaW5lYXJseSBTZXBhcmFibGUgRGF0YXNldHMiLCJoZWlnaHQiOjMwMCwibGF5ZXJzIjpbeyJhY3RpdmUiOnRydWUsImNoYXJ0X3R5cGUiOiJwb2ludCIsImNvbG9yX2ZpZWxkIjoibGFiZWwiLCJjb2xvcl9maWVsZF9hZ2dyZWdhdGUiOm51bGwsImNvbG9yX2ZpZWxkX2JpbiI6bnVsbCwiY29sb3JfZmllbGRfc2NhbGVfc2NoZW1lIjpudWxsLCJjb2xvcl9maWVsZF90eXBlIjoibm9taW5hbCIsImRhdGFfdmFyaWFibGUiOiJkYXRhc2V0IiwiZ2VvZGF0YV9jb2xvciI6ImJsdWUiLCJsYXRpdHVkZV9maWVsZCI6bnVsbCwibG9uZ2l0dWRlX2ZpZWxkIjpudWxsLCJ4X2ZpZWxkIjoiaW5wdXRfYSIsInhfZmllbGRfYWdncmVnYXRlIjpudWxsLCJ4X2ZpZWxkX2JpbiI6bnVsbCwieF9maWVsZF9zY2FsZV90eXBlIjpudWxsLCJ4X2ZpZWxkX3R5cGUiOiJxdWFudGl0YXRpdmUiLCJ5X2ZpZWxkIjoiaW5wdXRfYiIsInlfZmllbGRfYWdncmVnYXRlIjpudWxsLCJ5X2ZpZWxkX2JpbiI6bnVsbCwieV9maWVsZF9zY2FsZV90eXBlIjpudWxsLCJ5X2ZpZWxkX3R5cGUiOiJxdWFudGl0YXRpdmUifV0sInZsX2FsaWFzIjoiRWxpeGlyLlZlZ2FMaXRlIiwid2lkdGgiOjMwMH0","chunks":null,"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
-
-```elixir
-VegaLite.new(width: 300, height: 300, title: "Non Linearly Separable Datasets")
-|> VegaLite.data_from_values(dataset, only: ["input_a", "input_b", "label"])
-|> VegaLite.mark(:point)
-|> VegaLite.encode_field(:x, "input_a", type: :quantitative)
-|> VegaLite.encode_field(:y, "input_b", type: :quantitative)
-|> VegaLite.encode_field(:color, "label", type: :nominal)
-```
-
-```elixir
-import C12.DataPrep
-
-# Return 2 axis
-# Use f64 as type so we can represent losses that are too small to be represented with f32
-input_a = dataset |> Enum.map(& &1.input_a) |> Nx.tensor(type: :f64) |> Nx.reshape({:auto, 1})
-input_b = dataset |> Enum.map(& &1.input_b) |> Nx.tensor(type: :f64) |> Nx.reshape({:auto, 1})
-labels = dataset |> Enum.map(& &1.label) |> Nx.tensor(type: :f64) |> Nx.reshape({:auto, 1})
-
-x_train = x_test = prepend_bias(Nx.concatenate([input_a, input_b], axis: 1))
-y_train_unencoded = y_test = labels
-y_train = one_hot_encode(y_train_unencoded)
-x_train
-```
-
-```elixir
-C12.Perceptron.train(x_train, y_train, x_test, y_test, iterations = 10_000, lr = 0.1)
-```
-
-Here's what we get:  
-0 - Loss: 1.3862943611198901, 36.0%  
-1 - Loss: 1.3809206533861333, 64.0%  
-...  
-10000 - Loss: 1.0974531594775727, 73.33333333333333%
-
-Even with 10,000 iterations, we only achieve 73.33% accuracy. As we can see perceptron struggles with non linearly separable data
-
-## Neural Network from Chapter 11
+## Plotting the Neural Network Boundary
 
 ```elixir
 defmodule C11.NeuralNetwork do
@@ -500,8 +416,6 @@ defmodule C11.NeuralNetwork do
 end
 ```
 
-## Neural Network on Non Linearly Separable Data
-
 ```elixir
 # No prepend bias on input data as the network's code take care of that
 x_train = x_test = Nx.concatenate([input_a, input_b], axis: 1)
@@ -517,16 +431,6 @@ x_train = x_test = Nx.concatenate([input_a, input_b], axis: 1)
     lr = 0.3
   )
 ```
-
-Here we get:  
-Iteration: 1, Loss: 0.6627994495760408, Accuracy: 64.0%  
-Iteration: 2, Loss: 0.655730658562772, Accuracy: 64.0%  
-...  
-Iteration: 100000, Loss: 0.05194653477044733, Accuracy: 98.33%
-
-The reason for this high accuracy is the ability of neural network to bend its decision boundary because of its multiple layers
-
-## Plotting the Neural Network Decision Boundary
 
 ```elixir
 # Get input A
@@ -567,4 +471,6 @@ Vl.new(width: 600, height: 400)
 |> Vl.resolve(:scale, x: :shared, y: :shared, color: :independent)
 ```
 
-As seen on the diagram, neural network can bend its model & decision boundary while perceptrons can't. Though there are some misclassified points like the three (3) blue squares in the green area hence an accuracy of less than 100%.
+## How does the neural network fare on these data?
+
+Neural network's decision boundary almost perfectly encloses the green triangles on the green area while mostly all blue squares are in the blue area outside the decision boundary. There are few blue squares in the green area which was evident with the 98% accuracy of the model.
