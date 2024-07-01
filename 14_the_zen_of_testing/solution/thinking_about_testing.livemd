@@ -1,0 +1,15 @@
+# Hands On: Thinking About Testing
+
+## Problem & Solution
+
+### Situation:
+
+You have a large dataset of handwritten characters with 1,000,000 samples and split them into 3 - 900,000 for training, 50,000 for validation, and 50,000 for testing.
+
+### Problem:
+
+The data could be ordered. Consequently, there is a great chance that some letters are exclusively included only on the validation or test sets, and are missing on the training set and vice versa. Hence there are some data that were never before seen during training and would be hard for the model to determine.
+
+### Solution:
+
+Shuffle the data before splitting them into training, validation, and test set like in MNIST where data is already pre-shuffled. This will ensure that distribution of data is the same throughout the three sets.
